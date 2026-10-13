@@ -1,0 +1,1024 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>POINTIFY POS</title>
+    <meta name="description" content="High-performance Offline-First POS">
+    <link rel="manifest" href="./manifest.json">
+    <!-- PWA: theme colour + local icons (no third-party icon CDN). -->
+    <meta name="theme-color" content="#DC2626">
+    <link rel="icon" type="image/png" href="./icons/icon-192.png">
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <!-- Vendored locally: was https://cdn.tailwindcss.com (Play CDN, ~407 KB).
+         Same file, but now same-origin so it precaches with a visible status,
+         works with no network at all, and is no longer a third-party dependency. -->
+    <script src="./vendor/tailwind.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        cream: '#FDFBF7',
+                        primary: '#DC2626', // red-600
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+
+        .hide {
+            display: none !important;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        .toast {
+            animation: slideIn 0.3s ease-out forwards;
+        }
+
+        /* Sidebar active item gets a red rail on its left edge. It is driven by
+           the bg-red-50 class that switchView() already toggles, so neither the
+           markup nor the router needs to know about it. */
+        .nav-item {
+            position: relative;
+        }
+
+        .nav-item::before {
+            content: '';
+            position: absolute;
+            left: -12px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 3px;
+            height: 0;
+            background: #DC2626;
+            border-radius: 0 3px 3px 0;
+            transition: height .18s ease;
+        }
+
+        .nav-item.bg-red-50::before {
+            height: 55%;
+        }
+
+        /* One quiet scrollbar for every scrolling surface. */
+        ::-webkit-scrollbar {
+            width: 10px;
+            height: 10px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #e2e8f0;
+            border-radius: 999px;
+            border: 3px solid transparent;
+            background-clip: content-box;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #cbd5e1;
+            background-clip: content-box;
+        }
+
+        /* Consolidated Print Logic */
+        /* Mobile URL bar: 100vh includes the bar, so the till ran underneath it.
+           100dvh is the visible viewport. Specificity beats the h-screen utility. */
+        body.h-screen {
+            height: 100vh;
+            height: 100dvh;
+        }
+
+        /* The login card grew when "Forgot password?" was added. With
+           items-center alone, a card taller than the phone viewport is clipped
+           on BOTH edges and the form becomes untappable - the classic flexbox
+           overflow trap. align-items:flex-start + auto vertical margins centers
+           the card when it fits and lets it scroll from the top when it does
+           not, which `safe center` would do but Safari does not support. */
+        #auth-screen {
+            align-items: flex-start;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            padding-top: max(1rem, env(safe-area-inset-top));
+            padding-bottom: max(1rem, env(safe-area-inset-bottom));
+        }
+
+        #auth-screen > .bg-white {
+            margin-top: auto;
+            margin-bottom: auto;
+        }
+
+        /* Report letterhead and other print-only blocks are invisible on
+           screen so the phone layout stays compact, and appear only when the
+           browser builds a PDF. */
+        .print-only {
+            display: none !important;
+        }
+
+        @media print {
+            @page {
+                size: A4;
+                /* Reports default to A4. The receipt overrides this back to
+                   80mm via #thermal-page, enabled only while printing. */
+                margin: 14mm 12mm;
+            }
+
+            body,
+            html {
+                margin: 0;
+                padding: 0;
+                width: 100%;
+                background: white;
+            }
+
+            /* Default: Hide direct children of body to reset */
+            body>* {
+                display: none !important;
+            }
+
+            /* --- SCENARIO 1: RECEIPT PRINTING --- */
+            /* Target correct receipt modal which is a direct child of body in app.html */
+            body>#receipt-modal:not(.hidden) {
+                display: flex !important;
+                visibility: visible !important;
+                position: absolute !important;
+                top: 0;
+                left: 0;
+                width: 100% !important;
+                height: 100% !important;
+                background: white !important;
+                z-index: 9999;
+                align-items: flex-start !important;
+                /* Align to top for printing */
+                justify-content: center !important;
+                /* Center on page */
+                padding: 0 !important;
+            }
+
+            /* Show contents of receipt modal */
+            body>#receipt-modal:not(.hidden) * {
+                visibility: visible !important;
+            }
+
+            /* Ensure the receipt content box behaves for print */
+            body>#receipt-modal:not(.hidden)>div {
+                box-shadow: none !important;
+                border: none !important;
+                width: 80mm !important;
+                /* Force width */
+                max-width: 100% !important;
+                margin: 0 auto !important;
+                padding: 5px !important;
+                overflow: visible !important;
+            }
+
+            /* Hide print/close buttons */
+            .no-print,
+            button {
+                display: none !important;
+            }
+
+            /* --- SCENARIO 2: REPORT PRINTING --- */
+            /* Active when receipt modal is HIDDEN and Reports view is NOT hidden */
+            body:has(#receipt-modal.hidden) #app-shell,
+            body:has(#receipt-modal.hidden) main,
+            body:has(#receipt-modal.hidden) #views-container,
+            body:has(#receipt-modal.hidden) #view-reports:not(.hidden) {
+                display: block !important;
+                visibility: visible !important;
+                height: auto !important;
+                overflow: visible !important;
+                position: static !important;
+                width: 100% !important;
+            }
+
+            /* Hide Sidebar and Headers when printing reports */
+            body:has(#receipt-modal.hidden) aside,
+            body:has(#receipt-modal.hidden) header,
+            body:has(#receipt-modal.hidden) nav {
+                display: none !important;
+            }
+
+            /* Ensure Report Container is clean */
+            body:has(#receipt-modal.hidden) #view-reports:not(.hidden) {
+                background: white;
+                margin: 0;
+                padding: 20px;
+                border: none;
+            }
+
+            /* Hide report controls */
+            body:has(#receipt-modal.hidden) #view-reports .flex.justify-between button,
+            body:has(#receipt-modal.hidden) #view-reports .gap-2 button,
+            body:has(#receipt-modal.hidden) .filter-btn {
+                display: none !important;
+            }
+
+            /* Table Styling for Print */
+            .print-only {
+                display: block !important;
+            }
+
+            table {
+                width: 100% !important;
+                border-collapse: collapse !important;
+                font-size: 12px;
+            }
+
+            th,
+            td {
+                border: 1px solid #ddd !important;
+                padding: 8px !important;
+                color: black !important;
+            }
+
+            th {
+                background-color: #f3f3f3 !important;
+                font-weight: bold;
+            }
+
+            /* Stats Cards for Print */
+            .remove-print-margin {
+                display: grid !important;
+                grid-template-columns: repeat(3, 1fr) !important;
+                gap: 10px !important;
+                margin-bottom: 20px;
+            }
+
+            .remove-print-margin>div {
+                border: 1px solid #ddd !important;
+                padding: 10px !important;
+            }
+        }
+    </style>
+    <style id="thermal-page" disabled>
+        @media print {
+            @page {
+                size: 80mm auto;
+                margin: 0;
+            }
+        }
+    </style>
+    <script>
+        // An unthrottled alert() here is a hang on a POS: an error thrown inside a
+        // setInterval would raise a modal faster than anyone can dismiss it and the
+        // till becomes unusable. Always log, alert each distinct message at most
+        // once, and never block twice inside two seconds.
+        (function () {
+            var seen = Object.create(null);
+            var seenCount = 0;
+            var lastAlert = 0;
+            var report = function (title, detail) {
+                try { console.error(title, detail); } catch (ignore) { }
+                var key = title + '|' + detail;
+                if (seen[key]) return;
+                var now = Date.now();
+                if (now - lastAlert < 2000) return;
+                if (seenCount > 200) { seen = Object.create(null); seenCount = 0; }
+                seen[key] = true;
+                seenCount++;
+                lastAlert = now;
+                alert(title + '\n' + detail);
+            };
+            window.onerror = function (msg, url, line) {
+                report('Application Error: ' + msg, 'Line: ' + line + ' in ' + url);
+                return false;
+            };
+            window.addEventListener('unhandledrejection', function (event) {
+                report('Unhandled Promise Rejection:', String(event.reason));
+            });
+        })();
+    </script>
+</head>
+
+<body class="bg-cream text-slate-800 h-screen flex overflow-hidden selection:bg-red-200 selection:text-red-900">
+
+    <!-- Auth Layer (Login Screen) -->
+    <div id="auth-screen" class="fixed inset-0 z-[100] bg-cream flex items-center justify-center p-4">
+        <!-- Soft depth behind the card -->
+        <div class="pointer-events-none absolute inset-0 overflow-hidden">
+            <div class="absolute -top-32 -right-24 w-[28rem] h-[28rem] rounded-full bg-red-100/60 blur-3xl"></div>
+            <div class="absolute -bottom-40 -left-24 w-[28rem] h-[28rem] rounded-full bg-orange-50 blur-3xl"></div>
+        </div>
+
+        <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl shadow-slate-300/50 border border-slate-200 relative overflow-hidden">
+            <!-- Brand -->
+            <div class="px-8 pt-8 pb-6 text-center border-b border-slate-100 relative z-10">
+                <div class="w-12 h-12 bg-slate-900 rounded-2xl mx-auto mb-4 flex items-center justify-center shadow-lg">
+                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                    </svg>
+                </div>
+                <h1 class="text-2xl font-extrabold text-slate-900 tracking-tight">Pointify</h1>
+                <p class="text-slate-400 text-[13px] mt-1.5 font-medium">Sign in to the terminal</p>
+            </div>
+
+            <div id="login-panel" class="p-8 relative z-10">
+                <form id="login-form" class="space-y-5">
+                    <div>
+                        <label for="username"
+                            class="block text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">Username</label>
+                        <div class="relative">
+                            <svg class="w-5 h-5 absolute left-3.5 top-3 text-slate-400" fill="none" stroke="currentColor"
+                                viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path>
+                            </svg>
+                            <input type="text" id="username" autocomplete="username"
+                                class="w-full bg-slate-50 border border-slate-200 rounded-xl pl-11 pr-4 py-3 text-slate-900 focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition placeholder-slate-400 font-medium"
+                                placeholder="your username" required>
+                        </div>
+                    </div>
+
+                    <div>
+                        <label for="password"
+                            class="block text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">Password</label>
+                        <div class="relative">
+                            <svg class="w-5 h-5 absolute left-3.5 top-3 text-slate-400" fill="none" stroke="currentColor"
+                                viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z">
+                                </path>
+                            </svg>
+                            <input type="password" id="password" autocomplete="current-password"
+                                class="w-full bg-slate-50 border border-slate-200 rounded-xl pl-11 pr-4 py-3 text-slate-900 focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition placeholder-slate-400 font-medium"
+                                placeholder="your password" required>
+                        </div>
+                    </div>
+
+                    <button type="submit"
+                        class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3.5 rounded-xl transition shadow-lg shadow-red-600/20 mt-1">
+                        Sign in
+                    </button>
+                </form>
+                <p id="login-error"
+                    class="text-red-600 text-sm text-center mt-4 hidden bg-red-50 py-2.5 rounded-xl border border-red-100 font-medium">
+                </p>
+                <button type="button" id="forgot-password"
+                    class="w-full text-slate-400 hover:text-slate-600 text-[11px] font-bold uppercase tracking-widest py-3 mt-2 transition">
+                    Forgot password?
+                </button>
+
+                <!-- Non-destructive recovery: spend one backup code, reset one
+                     account. Nothing else on the device is touched. -->
+                <div id="recovery-panel" class="hidden p-8 relative z-10">
+                    <div class="text-center mb-6">
+                        <div class="w-12 h-12 bg-red-50 rounded-2xl mx-auto mb-4 shadow-sm flex items-center justify-center text-red-600 border border-red-100">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8v2.5H6v2.5H2v-2.118a2 2 0 01.586-1.414l5.72-5.72a6 6 0 112.929 5.912L15 11a2 2 0 110-4z">
+                                </path>
+                            </svg>
+                        </div>
+                        <h2 class="text-xl font-extrabold text-slate-900 tracking-tight">Recover your account</h2>
+                        <p class="text-slate-500 text-sm mt-2 font-medium leading-relaxed">
+                            Use one of your backup codes.<br>Nothing on this device is deleted.
+                        </p>
+                    </div>
+
+                    <form id="recovery-form" class="space-y-4">
+                        <div>
+                            <label for="rec-code"
+                                class="block text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">Backup
+                                code</label>
+                            <input type="text" id="rec-code" autocomplete="off" autocapitalize="characters"
+                                spellcheck="false" placeholder="XXXXX-XXXXX"
+                                class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base font-bold tracking-widest text-slate-900 placeholder-slate-400 focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition">
+                        </div>
+
+                        <div>
+                            <label for="rec-account"
+                                class="block text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">Account
+                                to recover</label>
+                            <select id="rec-account" required
+                                class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base font-bold text-slate-900 focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition">
+                            </select>
+                        </div>
+
+                        <div>
+                            <label for="rec-username"
+                                class="block text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">New
+                                username</label>
+                            <input type="text" id="rec-username" autocomplete="off"
+                                class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base text-slate-900 placeholder-slate-400 focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition">
+                        </div>
+
+                        <div>
+                            <label for="rec-password"
+                                class="block text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">New
+                                password</label>
+                            <input type="password" id="rec-password" autocomplete="new-password"
+                                class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base text-slate-900 placeholder-slate-400 focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition">
+                        </div>
+
+                        <div>
+                            <label for="rec-confirm"
+                                class="block text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">Confirm
+                                new password</label>
+                            <input type="password" id="rec-confirm" autocomplete="new-password"
+                                class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base text-slate-900 placeholder-slate-400 focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition">
+                        </div>
+
+                        <p id="rec-error"
+                            class="hidden text-sm font-bold text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+                        </p>
+
+                        <button type="submit" id="rec-submit"
+                            class="w-full bg-red-600 hover:bg-red-700 text-white font-extrabold py-3.5 rounded-xl transition shadow-lg shadow-red-600/20">
+                            Recover account
+                        </button>
+                    </form>
+
+                    <button type="button" id="rec-cancel"
+                        class="w-full text-slate-400 hover:text-slate-600 text-[11px] font-bold uppercase tracking-widest py-3 mt-2 transition">
+                        Back to sign in
+                    </button>
+
+                    <div class="border-t border-slate-100 mt-4 pt-4 text-center">
+                        <button type="button" id="rec-to-reset"
+                            class="text-slate-400 hover:text-red-600 text-[11px] font-bold uppercase tracking-widest py-2 transition">
+                            No backup codes? Erase this device &rsaquo;
+                        </button>
+                    </div>
+                </div>
+            </div><!-- /login-panel -->
+
+            <!-- D2 / Phase 2.5: forced password change on first login.
+                 Shown INSTEAD of the login form; the app shell stays hidden. -->
+            <div id="force-change-panel" class="hidden p-8 relative z-10">
+                <div class="text-center mb-7">
+                    <div class="w-12 h-12 bg-amber-50 rounded-2xl mx-auto mb-4 shadow-sm flex items-center justify-center text-amber-600 border border-amber-100">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path>
+                        </svg>
+                    </div>
+                    <h2 class="text-xl font-extrabold text-slate-900 tracking-tight">Choose a new password</h2>
+                    <p class="text-slate-500 text-sm mt-2 font-medium leading-relaxed">
+                        This account is still using the password it was created with.<br>Set your own to continue.
+                    </p>
+                </div>
+
+                <form id="force-change-form" class="space-y-4">
+                    <div>
+                        <label for="fc-current"
+                            class="block text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">Current
+                            password</label>
+                        <input type="password" id="fc-current" autocomplete="current-password"
+                            class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-slate-900 focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition placeholder-slate-400 font-medium"
+                            placeholder="Current password" required>
+                    </div>
+                    <div>
+                        <label for="fc-new"
+                            class="block text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">New
+                            password</label>
+                        <input type="password" id="fc-new" autocomplete="new-password"
+                            class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-slate-900 focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition placeholder-slate-400 font-medium"
+                            placeholder="Minimum 6 characters" required>
+                    </div>
+                    <div>
+                        <label for="fc-confirm"
+                            class="block text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">Confirm
+                            new password</label>
+                        <input type="password" id="fc-confirm" autocomplete="new-password"
+                            class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-slate-900 focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition placeholder-slate-400 font-medium"
+                            placeholder="Repeat the new password" required>
+                    </div>
+                    <button type="submit"
+                        class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3.5 rounded-xl transition shadow-lg shadow-red-600/20 mt-1">
+                        Save &amp; continue
+                    </button>
+                    <button type="button" id="fc-cancel"
+                        class="w-full text-slate-400 hover:text-slate-600 text-xs font-bold py-2 uppercase tracking-widest transition">
+                        Sign out
+                    </button>
+                </form>
+                <p id="change-error"
+                    class="text-red-600 text-sm text-center mt-4 hidden bg-red-50 py-2.5 rounded-xl border border-red-100 font-medium">
+                </p>
+            </div>
+
+            <!-- Locked-out recovery. This device has no server, so the only way
+                 back in is a local wipe. Gated behind typing RESET because the
+                 login screen is reachable by anyone at the till. -->
+            <div id="reset-panel" class="hidden p-8 relative z-10">
+                <div class="text-center mb-6">
+                    <div class="w-12 h-12 bg-red-50 rounded-2xl mx-auto mb-4 shadow-sm flex items-center justify-center text-red-600 border border-red-100">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                        </svg>
+                    </div>
+                    <h2 class="text-xl font-extrabold text-slate-900 tracking-tight">Reset this device</h2>
+                    <p class="text-slate-500 text-sm mt-2 font-medium leading-relaxed">
+                        Everything is stored on this device only.<br>There is no server copy and no undo.
+                    </p>
+                </div>
+
+                <ul class="bg-red-50 border border-red-100 rounded-xl p-4 text-sm text-red-700 space-y-1.5 mb-5 font-medium">
+                    <li>&bull; All products and stock levels</li>
+                    <li>&bull; All sales history and reports</li>
+                    <li>&bull; All team accounts and their passwords</li>
+                    <li>&bull; Store name, logo and payment settings</li>
+                </ul>
+
+                <label for="reset-confirm-input"
+                    class="block text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">Type RESET to
+                    confirm</label>
+                <input type="text" id="reset-confirm-input" autocomplete="off" autocapitalize="characters"
+                    placeholder="RESET"
+                    class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-base font-bold tracking-widest text-slate-900 placeholder-slate-400 focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition mb-4">
+
+                <p id="reset-error"
+                    class="hidden text-sm font-bold text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mb-4">
+                </p>
+
+                <button type="button" id="reset-confirm" disabled
+                    class="w-full bg-red-600 hover:bg-red-700 text-white font-extrabold py-3.5 rounded-xl transition shadow-lg shadow-red-600/20 mb-3 disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none">
+                    Erase everything and reset
+                </button>
+                <button type="button" id="reset-cancel"
+                    class="w-full text-slate-400 hover:text-slate-600 text-[11px] font-bold uppercase tracking-widest py-3 transition">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- App Shell (Sidebar + Main Content) -->
+    <div id="app-shell" class="flex w-full h-full hidden">
+
+        <!-- Sidebar -->
+        <aside class="w-60 lg:w-64 bg-white border-r border-slate-200 flex-col hidden md:flex z-40">
+            <!-- Brand -->
+            <div class="px-5 py-5 border-b border-slate-100 flex items-center gap-3">
+                <span class="w-9 h-9 rounded-xl bg-slate-900 flex items-center justify-center shadow-sm shrink-0">
+                    <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                    </svg>
+                </span>
+                <span class="min-w-0">
+                    <span class="block font-extrabold tracking-tight text-slate-900 leading-none">Pointify</span>
+                    <span class="block text-[10px] font-bold uppercase tracking-widest text-slate-400 mt-1">Point of Sale</span>
+                </span>
+            </div>
+
+            <!-- Navigation -->
+            <nav class="flex-1 px-3 py-4 overflow-y-auto">
+                <p class="px-3 mb-2 text-[10px] font-bold uppercase tracking-widest text-slate-400">Terminal</p>
+                <div class="space-y-1">
+                    <button data-view="pos"
+                        class="nav-item w-full flex items-center gap-3 px-3 py-2.5 text-red-600 bg-red-50 hover:bg-slate-50 rounded-xl transition group">
+                        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z">
+                            </path>
+                        </svg>
+                        <span class="font-bold text-sm">Point of Sale</span>
+                    </button>
+
+                    <button data-view="inventory"
+                        class="nav-item w-full flex items-center gap-3 px-3 py-2.5 text-slate-500 hover:bg-slate-50 rounded-xl transition group">
+                        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path>
+                        </svg>
+                        <span class="font-bold text-sm">Inventory</span>
+                    </button>
+
+                    <button data-view="reports"
+                        class="nav-item w-full flex items-center gap-3 px-3 py-2.5 text-slate-500 hover:bg-slate-50 rounded-xl transition group">
+                        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z">
+                            </path>
+                        </svg>
+                        <span class="font-bold text-sm">Reports</span>
+                    </button>
+
+                    <button data-view="settings"
+                        class="nav-item w-full flex items-center gap-3 px-3 py-2.5 text-slate-500 hover:bg-slate-50 rounded-xl transition group">
+                        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
+                            </path>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                        </svg>
+                        <span class="font-bold text-sm">Settings</span>
+                    </button>
+                </div>
+            </nav>
+
+            <!-- Signed-in user -->
+            <div class="p-3 border-t border-slate-100 bg-slate-50/70">
+                <div class="flex items-center gap-3 px-2 py-2">
+                    <div class="w-9 h-9 rounded-full bg-slate-900 flex items-center justify-center text-xs font-extrabold text-white shrink-0"
+                        id="user-avatar">A</div>
+                    <div class="min-w-0 flex-1">
+                        <p class="text-sm font-bold text-slate-800 truncate" id="user-name">Admin User</p>
+                        <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400 truncate" id="user-role">
+                            Administrator</p>
+                    </div>
+                </div>
+                <button id="lock-btn"
+                    class="mt-1 w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 rounded-xl transition text-sm font-bold border border-slate-200">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z">
+                        </path>
+                    </svg>
+                    Lock Screen
+                </button>
+                <button id="logout-btn"
+                    class="mt-1 w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-white text-slate-600 hover:bg-red-50 hover:text-red-600 rounded-xl transition text-sm font-bold border border-slate-200">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1">
+                        </path>
+                    </svg>
+                    Sign Out
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="flex-1 min-w-0 min-h-0 overflow-hidden relative bg-cream flex flex-col">
+            <!-- Mobile Header (the sidebar is hidden here, so Sign out lives here) -->
+            <header
+                class="md:hidden flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-200 sticky top-0 bg-cream/95 backdrop-blur-xl z-20">
+                <div class="flex items-center gap-2.5 min-w-0">
+                    <span class="w-8 h-8 rounded-lg bg-slate-900 flex items-center justify-center shrink-0">
+                        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                        </svg>
+                    </span>
+                    <span class="font-extrabold tracking-tight text-slate-900">Pointify</span>
+                </div>
+                <div class="flex items-center gap-2">
+                <button id="mobile-lock-btn"
+                    class="inline-flex items-center gap-1.5 text-xs font-bold text-slate-500 hover:text-slate-900 bg-white border border-slate-200 rounded-lg px-3 py-2 transition shadow-sm">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z">
+                        </path>
+                    </svg>
+                    Lock
+                </button>
+                <button id="mobile-logout-btn"
+                    class="inline-flex items-center gap-1.5 text-xs font-bold text-slate-500 hover:text-red-600 bg-white border border-slate-200 rounded-lg px-3 py-2 transition shadow-sm">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path>
+                    </svg>
+                    Sign out
+                </button>
+                </div>
+            </header>
+
+            <!-- Views Container -->
+            <div id="views-container" class="p-2 pb-24 md:p-6 md:pb-6 max-w-[1600px] mx-auto w-full flex-1 min-h-0 overflow-y-auto">
+                <!-- Initial loading state or default view -->
+                <div id="view-pos" class="view-section h-full"></div>
+                <div id="view-inventory" class="view-section hidden h-full"></div>
+                <div id="view-reports" class="view-section hidden h-full"></div>
+                <div id="view-settings" class="view-section hidden h-full"></div>
+            </div>
+        </main>
+
+        <!-- Mobile Bottom Nav -->
+        <nav
+            class="md:hidden fixed bottom-0 inset-x-0 bg-white/95 backdrop-blur-xl border-t border-slate-200 flex justify-around px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] z-30 shadow-[0_-6px_24px_rgba(15,23,42,0.07)]">
+            <button data-view="pos"
+                class="nav-item-mobile flex-1 flex flex-col items-center gap-1 py-1.5 rounded-xl text-red-600 transition">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path>
+                </svg>
+                <span class="text-[10px] font-bold">POS</span>
+            </button>
+            <button data-view="inventory"
+                class="nav-item-mobile flex-1 flex flex-col items-center gap-1 py-1.5 rounded-xl text-slate-400 transition">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path>
+                </svg>
+                <span class="text-[10px] font-bold">Items</span>
+            </button>
+            <button data-view="reports"
+                class="nav-item-mobile flex-1 flex flex-col items-center gap-1 py-1.5 rounded-xl text-slate-400 transition">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                </svg>
+                <span class="text-[10px] font-bold">Reports</span>
+            </button>
+            <button data-view="settings"
+                class="nav-item-mobile flex-1 flex flex-col items-center gap-1 py-1.5 rounded-xl text-slate-400 transition">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z|M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                </svg>
+                <span class="text-[10px] font-bold">Settings</span>
+            </button>
+        </nav>
+    </div>
+
+    <!-- Receipt Modal (Hidden by default) -->
+    <div id="receipt-modal"
+        class="hidden fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div class="bg-white w-full max-w-[80mm] max-h-[90vh] overflow-y-auto rounded-none shadow-2xl relative">
+            <div id="receipt-content" class="p-4 bg-white text-slate-900 font-mono text-xs leading-relaxed">
+                <!-- Receipt injected here by JS -->
+            </div>
+            <!-- Print Actions (injected by JS) -->
+        </div>
+    </div>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container"
+        class="fixed bottom-20 right-4 md:bottom-8 md:right-8 z-[200] flex flex-col gap-2 pointer-events-none"></div>
+
+    <!-- Modules -->
+    <script type="module" src="./js/db.js?v=17"></script>
+    <script type="module" src="./js/auth.js?v=17"></script>
+    <script type="module" src="./js/inventory.js?v=17"></script>
+    <script type="module" src="./js/pos.js?v=17"></script>
+    <script type="module" src="./js/reports.js?v=17"></script>
+    <script type="module" src="./js/settings.js?v=17"></script>
+
+    <!-- Screen lock: covers the app without ending the session, so stepping
+         away from the till does not cost a re-login. Sits above everything. -->
+    <div id="lock-screen" class="hidden fixed inset-0 z-[350] bg-slate-900/95 backdrop-blur-md flex items-center justify-center p-5">
+        <div class="w-full max-w-xs text-center">
+            <div class="w-16 h-16 rounded-full bg-white/10 border border-white/20 flex items-center justify-center mx-auto mb-4">
+                <span id="lock-avatar" class="text-2xl font-black text-white">S</span>
+            </div>
+            <p id="lock-name" class="text-white font-extrabold text-lg leading-tight">Super</p>
+            <p class="text-slate-400 text-[11px] font-bold uppercase tracking-widest mt-1.5 mb-6">Screen locked</p>
+
+            <form id="unlock-form" class="space-y-3">
+                <input type="password" id="lock-password" autocomplete="current-password"
+                    placeholder="Enter your password"
+                    class="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3.5 text-base text-white placeholder-slate-400 focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition">
+                <p id="lock-error"
+                    class="hidden text-sm font-bold text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+                </p>
+                <button type="submit" id="unlock-btn"
+                    class="w-full bg-red-600 hover:bg-red-700 text-white font-extrabold py-3.5 rounded-xl transition shadow-lg shadow-red-600/20">
+                    Unlock
+                </button>
+            </form>
+
+            <button type="button" id="lock-signout"
+                class="mt-5 text-slate-400 hover:text-white text-[11px] font-bold uppercase tracking-widest py-2 transition">
+                Sign out instead
+            </button>
+        </div>
+    </div>
+
+    <!-- Backup codes: shown once after the first sign-in, and again from
+         Settings whenever the owner re-enters their current password.
+         Sits above the app shell so it is not clipped by the view scroller. -->
+    <div id="backup-codes-modal" class="hidden fixed inset-0 z-[300] bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 relative">
+            <h2 class="text-xl font-extrabold text-slate-900 tracking-tight text-center">Your backup codes</h2>
+            <p class="text-slate-500 text-sm mt-2 font-medium text-center leading-relaxed">
+                Each code works <strong class="text-slate-700">once</strong>. Keep them somewhere
+                safe &mdash; they are the only way back in if you forget your password.
+            </p>
+
+            <div id="backup-codes-list" class="mt-5 space-y-2"></div>
+
+            <p id="backup-copied" class="hidden text-xs font-bold text-emerald-600 text-center mt-3">Copied to clipboard</p>
+
+            <button type="button" id="backup-copy"
+                class="w-full mt-4 min-h-[44px] bg-slate-900 hover:bg-black text-white font-extrabold text-sm py-3 rounded-xl transition">
+                Copy all codes
+            </button>
+
+            <label class="flex items-start gap-3 mt-5 cursor-pointer select-none">
+                <input type="checkbox" id="backup-confirmed" class="mt-1 w-5 h-5 rounded border-slate-300 text-red-600 focus:ring-red-500">
+                <span class="text-sm text-slate-600 font-medium leading-snug">I have saved these codes somewhere safe</span>
+            </label>
+
+            <button type="button" id="backup-continue" disabled
+                class="w-full mt-4 min-h-[44px] bg-red-600 hover:bg-red-700 text-white font-extrabold py-3.5 rounded-xl transition shadow-lg shadow-red-600/20 disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none">
+                Continue
+            </button>
+        </div>
+    </div>
+
+    <!-- Router & Shell Logic -->
+    <script>
+        // Simple View Router
+        // Phase 2.2: the permission gate lives HERE, not in the nav click handler,
+        // so every caller (nav, auth.js, console, future code) is checked once
+        // against the same VIEW_ACCESS table in auth.js.
+        window.switchView = function (viewName) {
+            if (window.checkPermission && !window.checkPermission(viewName)) {
+                window.showToast('Access Denied: Restricted Area', 'error');
+                return false;
+            }
+
+            document.querySelectorAll('.view-section').forEach(el => el.classList.add('hidden'));
+            const target = document.getElementById(`view-${viewName}`);
+            if (target) target.classList.remove('hidden');
+
+            // Update Active Nav State
+            document.querySelectorAll('.nav-item').forEach(btn => {
+                if (btn.dataset.view === viewName) {
+                    btn.classList.add('bg-red-50', 'text-red-600');
+                    btn.classList.remove('text-slate-500');
+                } else {
+                    btn.classList.remove('bg-red-50', 'text-red-600');
+                    btn.classList.add('text-slate-500');
+                }
+            });
+
+            document.querySelectorAll('.nav-item-mobile').forEach(btn => {
+                if (btn.dataset.view === viewName) {
+                    btn.classList.add('text-red-600');
+                    btn.classList.remove('text-slate-400');
+                } else {
+                    btn.classList.remove('text-red-600');
+                    btn.classList.add('text-slate-400');
+                }
+            });
+
+            // Live Data Sync: Refresh module data when entering view
+            if (viewName === 'pos' && window.posModule) {
+                window.posModule.loadProducts();
+                window.posModule.loadSettings();
+                window.posModule.renderPaymentButtons(); // Re-render buttons with new settings
+            }
+            if (viewName === 'inventory' && window.inventoryModule) window.inventoryModule.loadProducts();
+            if (viewName === 'settings' && window.settingsModule) window.settingsModule.loadSettings();
+            if (viewName === 'reports' && window.reports) window.reports.generateReport();
+
+            return true;
+        }
+
+        // Global Toast Notification
+        window.showToast = (message, type = 'success') => {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            const colors = type === 'error'
+                ? 'bg-red-600 shadow-red-600/25'
+                : 'bg-emerald-600 shadow-emerald-600/25';
+            toast.className = `toast px-4 py-3.5 rounded-xl shadow-lg text-white text-sm font-semibold flex items-center gap-3 ${colors} min-w-[220px] max-w-[340px]`;
+
+            const icon = type === 'error'
+                ? '<span class="w-6 h-6 rounded-full bg-white/15 flex items-center justify-center flex-shrink-0"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg></span>'
+                : '<span class="w-6 h-6 rounded-full bg-white/15 flex items-center justify-center flex-shrink-0"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path></svg></span>';
+
+            toast.innerHTML = `${icon} <span>${message}</span>`;
+
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.style.transition = 'opacity 0.3s, transform 0.3s';
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateY(10px)';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        };
+
+        // Mobile has no sidebar, so its Sign out button lives in the header.
+        //
+        // window.logout is defined at the END of js/auth.js, and every module
+        // script is deferred while this inline block runs during parsing. So at
+        // bind time window.logout is always undefined, and the old `typeof
+        // window.logout === 'function'` guard silently attached nothing - the
+        // button did nothing at all. Resolve the handler at click time instead,
+        // which is long after the modules have executed.
+        const mobileLogout = document.getElementById('mobile-logout-btn');
+        if (mobileLogout) {
+            mobileLogout.addEventListener('click', () => {
+                if (typeof window.logout === 'function') {
+                    window.logout();
+                } else {
+                    console.error('Pointify: window.logout is not available.');
+                }
+            });
+        }
+
+        // Event Listeners for Nav
+        // Phase 2.2: switchView() itself is the gate - no second copy of the rule here.
+        document.querySelectorAll('[data-view]').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                switchView(e.currentTarget.dataset.view);
+            });
+        });
+
+        // Receipts must print on 80mm thermal stock, reports on A4. Only one
+        // @page rule can win, so the thermal one ships disabled and is switched
+        // on for the length of the print call.
+        window.printReceipt = () => {
+            const thermal = document.getElementById('thermal-page');
+            if (thermal) thermal.disabled = false;
+            window.print();
+            setTimeout(() => { if (thermal) thermal.disabled = true; }, 1000);
+        };
+
+        // --- Self repair ------------------------------------------------------
+        // The failure mode this guards against: a service worker that serves a
+        // shell which never boots, so the phone sits on the splash screen with
+        // no console and no way out. Clearing registrations + caches is the
+        // universal cure, so expose it as one URL and one button.
+        window.repairPointify = async (keepGoing) => {
+            try {
+                const regs = await navigator.serviceWorker.getRegistrations();
+                await Promise.all(regs.map(r => r.unregister()));
+            } catch (e) { /* no SW support */ }
+            try {
+                const keys = await caches.keys();
+                await Promise.all(keys.map(k => caches.delete(k)));
+            } catch (e) { /* Cache API unavailable */ }
+            try {
+                sessionStorage.clear();
+                localStorage.clear();
+            } catch (e) { /* storage unavailable */ }
+            if (keepGoing !== false) {
+                // Drop ?repair so the reload does not loop.
+                const url = new URL(window.location.href);
+                url.searchParams.delete('repair');
+                window.location.replace(url.toString());
+            }
+        };
+
+        if (new URLSearchParams(window.location.search).get('repair') === '1') {
+            window.repairPointify();
+        } else {
+            // Boot watchdog. 8s is far past a healthy first paint; if we get
+            // here the page loaded but the app never became usable.
+            setTimeout(() => {
+                if (window.__pointifyReady) return;
+                const overlay = document.createElement('div');
+                overlay.id = 'boot-fallback';
+                overlay.style.cssText =
+                    'position:fixed;inset:0;z-index:9999;background:#FDFBF7;' +
+                    'display:flex;align-items:center;justify-content:center;padding:24px;';
+                overlay.innerHTML =
+                    '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:16px;' +
+                    'padding:24px;max-width:420px;text-align:center;font-family:Inter,sans-serif">' +
+                    '<div style="font-weight:800;font-size:17px;color:#0f172a;margin-bottom:8px">' +
+                    'Pointify did not finish starting</div>' +
+                    '<div style="font-size:14px;color:#475569;line-height:1.5;margin-bottom:16px">' +
+                    'The page loaded but the app never became usable. This is usually a ' +
+                    'stale offline copy left by an update. Repairing clears it - your ' +
+                    'sales, products and settings are stored separately and are kept.' +
+                    '</div>' +
+                    '<button id="boot-repair" style="width:100%;background:#DC2626;color:#fff;' +
+                    'border:0;border-radius:12px;padding:13px;font-weight:800;font-size:15px;' +
+                    'cursor:pointer;margin-bottom:8px">Repair and reload</button>' +
+                    '<button id="boot-dismiss" style="width:100%;background:transparent;color:#64748b;' +
+                    'border:0;padding:8px;font-size:13px;font-weight:700;cursor:pointer">Dismiss</button>' +
+                    '</div>';
+                document.body.appendChild(overlay);
+                const btn = overlay.querySelector('#boot-repair');
+                if (btn) btn.onclick = () => { btn.disabled = true; btn.textContent = 'Repairing...'; window.repairPointify(); };
+                const no = overlay.querySelector('#boot-dismiss');
+                if (no) no.onclick = () => overlay.remove();
+            }, 8000);
+        }
+
+        // Register Service Worker
+        // Deliberately no auto-reload here: app.html holds the live cart and a
+        // mid-checkout reload would lose it. An updated sw.js takes effect on the
+        // next navigation instead.
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('./sw.js')
+                .then(() => console.log('Pointify: service worker registered - offline mode available'))
+                .catch(err => {
+                    console.error('Pointify: offline mode is NOT available.', err);
+                    if (!window.isSecureContext) {
+                        console.error('Pointify: this origin is not a secure context. Service workers require https:// (or http://localhost), so install and offline support will not work here.');
+                    }
+                });
+        }
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pointify - Offline Point of Sale</title>
+    <meta name="description" content="Offline-first POS for modern retail. Sell, track stock and print receipts with no internet and no subscription.">
+    <!-- PWA: without these the manifest is never discovered, Chrome offers
+         no install prompt and no theme colour for this page. -->
+    <meta name="theme-color" content="#DC2626">
+    <link rel="manifest" href="./manifest.json">
+    <link rel="icon" type="image/png" href="./icons/icon-192.png">
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <!-- Vendored locally: was https://cdn.tailwindcss.com (Play CDN, ~407 KB).
+         Same file, but now same-origin so it precaches with a visible status,
+         works with no network at all, and is no longer a third-party dependency. -->
+    <script src="./vendor/tailwind.js"></script>
+    <!-- Same Inter URL as app.html so both pages share ONE cached font file. -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        cream: '#FDFBF7',
+                        primary: '#DC2626',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* One decorative texture, reused by every section that needs depth. */
+        .hero-pattern {
+            background-color: #FDFBF7;
+            background-image: radial-gradient(#E7E5E4 1px, transparent 1px);
+            background-size: 32px 32px;
+        }
+
+        /* Sections fade in so the page reads as a sequence, not a wall. */
+        .reveal {
+            animation: reveal .6s cubic-bezier(.22, .61, .36, 1) both;
+        }
+
+        @keyframes reveal {
+            from {
+                opacity: 0;
+                transform: translateY(14px);
+            }
+
+            to {
+                opacity: 1;
+                transform: none;
+            }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .reveal {
+                animation: none;
+            }
+        }
+
+        @media print {
+            @page {
+                size: landscape;
+                margin: 5mm;
+            }
+
+            body {
+                background: white;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+                zoom: 0.75;
+            }
+
+            nav,
+            button,
+            .filter-btn,
+            .scope-btn,
+            #btn-saved-settings,
+            #btn-export-csv,
+            #btn-print-report,
+            .remove-print-margin {
+                display: none !important;
+            }
+
+            #view-reports {
+                margin: 0 !important;
+                padding: 0 !important;
+                width: 100% !important;
+                height: auto !important;
+                overflow: visible !important;
+            }
+
+            table {
+                width: 100% !important;
+                table-layout: auto !important;
+                font-size: 10px !important;
+            }
+
+            th,
+            td {
+                padding: 4px !important;
+                white-space: normal !important;
+            }
+
+            tr {
+                break-inside: avoid;
+            }
+
+            .hidden,
+            #payment-summary-container.hidden {
+                display: none !important;
+            }
+        }
+    </style>
+</head>
+
+<body class="bg-cream text-slate-800 selection:bg-red-200 selection:text-red-900 flex flex-col min-h-screen">
+
+    <!-- ── Top bar ─────────────────────────────────────────────────────── -->
+    <nav class="fixed inset-x-0 top-0 z-50 bg-cream/80 backdrop-blur-xl border-b border-slate-200/70">
+        <div class="max-w-6xl mx-auto px-5 sm:px-8">
+            <div class="flex items-center justify-between h-16 sm:h-[68px]">
+                <a href="./index.html" class="flex items-center gap-2.5 shrink-0">
+                    <span class="w-9 h-9 rounded-xl bg-slate-900 flex items-center justify-center shadow-sm">
+                        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                        </svg>
+                    </span>
+                    <span class="text-lg font-extrabold tracking-tight text-slate-900">Pointify</span>
+                </a>
+
+                <div class="hidden sm:flex items-center gap-1">
+                    <a href="#about"
+                        class="px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-900 rounded-lg hover:bg-white/70 transition">Features</a>
+                    <a href="#contact"
+                        class="px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-900 rounded-lg hover:bg-white/70 transition">Contact</a>
+                    <a href="./app.html"
+                        class="ml-2 inline-flex items-center gap-2 bg-slate-900 text-white px-5 py-2.5 rounded-xl text-sm font-bold hover:bg-black transition shadow-sm">
+                        Open the till
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+                        </svg>
+                    </a>
+                </div>
+
+                <a href="./app.html"
+                    class="sm:hidden inline-flex items-center bg-slate-900 text-white px-4 py-2 rounded-xl text-sm font-bold">
+                    Open
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- ── Hero ────────────────────────────────────────────────────────── -->
+    <header class="hero-pattern relative overflow-hidden pt-28 pb-16 sm:pt-36 sm:pb-24">
+        <div class="absolute -top-24 -right-24 w-[26rem] h-[26rem] rounded-full bg-red-100/70 blur-3xl"></div>
+        <div class="absolute -bottom-32 -left-24 w-[26rem] h-[26rem] rounded-full bg-orange-50 blur-3xl"></div>
+
+        <div class="max-w-6xl mx-auto px-5 sm:px-8 relative z-10 text-center">
+            <div class="reveal inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-slate-200 text-[13px] font-semibold text-slate-600 shadow-sm mb-7">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                Works with the internet switched off
+            </div>
+
+            <h1 class="reveal text-[2.5rem] leading-[1.05] sm:text-6xl lg:text-7xl font-extrabold tracking-tight text-slate-900 mb-6">
+                Run your shop.<br class="hidden sm:block">
+                <span class="text-red-600">Not your subscription.</span>
+            </h1>
+
+            <p class="reveal max-w-2xl mx-auto text-lg sm:text-xl text-slate-600 font-medium mb-9">
+                A point of sale that lives on your own machine. Take payments, track stock and print
+                receipts &mdash; online or not, with no monthly fee and nothing leaving your device.
+            </p>
+
+            <div class="reveal flex flex-col sm:flex-row gap-3 justify-center items-center">
+                <a href="./app.html"
+                    class="w-full sm:w-auto px-7 py-4 bg-red-600 hover:bg-red-700 text-white rounded-2xl font-bold text-base shadow-xl shadow-red-600/25 transition hover:-translate-y-0.5 flex items-center justify-center gap-2">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z">
+                        </path>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                    Launch the terminal
+                </a>
+                <button id="pwa-install-btn"
+                    class="hidden w-full sm:w-auto px-7 py-4 bg-white hover:bg-slate-50 border border-slate-300 text-slate-900 rounded-2xl font-bold text-base transition flex items-center justify-center gap-2 shadow-sm">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                    </svg>
+                    Install App
+                </button>
+            </div>
+
+            <!-- Product preview -->
+            <div class="reveal mt-14 sm:mt-20 max-w-5xl mx-auto">
+                <div class="rounded-3xl border border-slate-200 bg-white p-2 sm:p-3 shadow-2xl shadow-slate-300/50">
+                    <div class="rounded-2xl overflow-hidden bg-slate-50 border border-slate-100">
+                        <img src="pointify-dashboard-preview.png" alt="Pointify POS Dashboard Preview"
+                            class="w-full h-auto block">
+                    </div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- ── At a glance ─────────────────────────────────────────────────── -->
+    <section class="bg-white border-y border-slate-200">
+        <div class="max-w-6xl mx-auto px-5 sm:px-8">
+            <dl class="grid grid-cols-2 lg:grid-cols-4 divide-x divide-y lg:divide-y-0 divide-slate-100">
+                <div class="px-5 sm:px-8 py-7 lg:py-9 text-center">
+                    <dt class="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-2">Connectivity</dt>
+                    <dd class="text-slate-900 font-extrabold text-base sm:text-lg">No internet required</dd>
+                </div>
+                <div class="px-5 sm:px-8 py-7 lg:py-9 text-center">
+                    <dt class="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-2">Roles</dt>
+                    <dd class="text-slate-900 font-extrabold text-base sm:text-lg">Admin &middot; Manager &middot; Cashier</dd>
+                </div>
+                <div class="px-5 sm:px-8 py-7 lg:py-9 text-center">
+                    <dt class="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-2">Your data</dt>
+                    <dd class="text-slate-900 font-extrabold text-base sm:text-lg">Stored on this device</dd>
+                </div>
+                <div class="px-5 sm:px-8 py-7 lg:py-9 text-center">
+                    <dt class="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-2">Cost</dt>
+                    <dd class="text-slate-900 font-extrabold text-base sm:text-lg">No monthly fee</dd>
+                </div>
+            </dl>
+        </div>
+    </section>
+
+    <!-- ── Features ────────────────────────────────────────────────────── -->
+    <section id="about" class="py-16 sm:py-24 bg-cream">
+        <div class="max-w-6xl mx-auto px-5 sm:px-8">
+            <div class="max-w-2xl mb-12 sm:mb-16">
+                <p class="text-[11px] font-bold uppercase tracking-widest text-red-600 mb-3">What you get</p>
+                <h2 class="text-3xl sm:text-4xl font-extrabold tracking-tight text-slate-900 mb-4">
+                    Everything the counter needs, nothing it doesn't.
+                </h2>
+                <p class="text-slate-600 text-lg leading-relaxed">
+                    Built as a single installable app that runs from your browser and keeps working
+                    when the line goes down.
+                </p>
+            </div>
+
+            <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
+                <!-- Card -->
+                <div class="group bg-white rounded-2xl border border-slate-200 p-7 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition">
+                    <div class="w-11 h-11 rounded-xl bg-red-50 text-red-600 flex items-center justify-center mb-5 group-hover:bg-red-600 group-hover:text-white transition">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                        </svg>
+                    </div>
+                    <h3 class="text-lg font-bold text-slate-900 mb-2">Instant, even offline</h3>
+                    <p class="text-slate-500 leading-relaxed text-[15px]">
+                        Records are written to a local database on the device. No round trip, no
+                        spinner, and the till keeps selling with the network unplugged.
+                    </p>
+                </div>
+
+                <div class="group bg-white rounded-2xl border border-slate-200 p-7 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition">
+                    <div class="w-11 h-11 rounded-xl bg-red-50 text-red-600 flex items-center justify-center mb-5 group-hover:bg-red-600 group-hover:text-white transition">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z">
+                            </path>
+                        </svg>
+                    </div>
+                    <h3 class="text-lg font-bold text-slate-900 mb-2">Three roles, one rule</h3>
+                    <p class="text-slate-500 leading-relaxed text-[15px]">
+                        Admins run the shop, managers add stock, cashiers sell. Permissions are
+                        checked on every action, not just hidden in the menu.
+                    </p>
+                </div>
+
+                <div class="group bg-white rounded-2xl border border-slate-200 p-7 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition">
+                    <div class="w-11 h-11 rounded-xl bg-red-50 text-red-600 flex items-center justify-center mb-5 group-hover:bg-red-600 group-hover:text-white transition">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z">
+                            </path>
+                        </svg>
+                    </div>
+                    <h3 class="text-lg font-bold text-slate-900 mb-2">Receipts that print</h3>
+                    <p class="text-slate-500 leading-relaxed text-[15px]">
+                        80&nbsp;mm thermal layouts for cash, card and mobile-money payments, plus a
+                        printable sales report when you need the day on paper.
+                    </p>
+                </div>
+
+                <div class="group bg-white rounded-2xl border border-slate-200 p-7 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition">
+                    <div class="w-11 h-11 rounded-xl bg-red-50 text-red-600 flex items-center justify-center mb-5 group-hover:bg-red-600 group-hover:text-white transition">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path>
+                        </svg>
+                    </div>
+                    <h3 class="text-lg font-bold text-slate-900 mb-2">Stock you can trust</h3>
+                    <p class="text-slate-500 leading-relaxed text-[15px]">
+                        Quantities drop as you sell, low-stock alerts fire before a shelf runs dry,
+                        and barcode scanning is built into the search.
+                    </p>
+                </div>
+
+                <div class="group bg-white rounded-2xl border border-slate-200 p-7 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition">
+                    <div class="w-11 h-11 rounded-xl bg-red-50 text-red-600 flex items-center justify-center mb-5 group-hover:bg-red-600 group-hover:text-white transition">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z">
+                            </path>
+                        </svg>
+                    </div>
+                    <h3 class="text-lg font-bold text-slate-900 mb-2">Reports that add up</h3>
+                    <p class="text-slate-500 leading-relaxed text-[15px]">
+                        Revenue, profit and best-sellers calculated the same way everywhere, so the
+                        closing figure always matches the receipts.
+                    </p>
+                </div>
+
+                <div class="group bg-white rounded-2xl border border-slate-200 p-7 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition">
+                    <div class="w-11 h-11 rounded-xl bg-red-50 text-red-600 flex items-center justify-center mb-5 group-hover:bg-red-600 group-hover:text-white transition">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path>
+                        </svg>
+                    </div>
+                    <h3 class="text-lg font-bold text-slate-900 mb-2">Back up in one click</h3>
+                    <p class="text-slate-500 leading-relaxed text-[15px]">
+                        Export every user, product, sale and setting to a single file, and restore it
+                        on a new device whenever you need to.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ── Contact ─────────────────────────────────────────────────────── -->
+    <section id="contact" class="py-16 sm:py-24 bg-white border-t border-slate-200">
+        <div class="max-w-6xl mx-auto px-5 sm:px-8">
+            <div class="grid lg:grid-cols-2 gap-10 lg:gap-14 items-start">
+                <div>
+                    <p class="text-[11px] font-bold uppercase tracking-widest text-red-600 mb-3">Get in touch</p>
+                    <h2 class="text-3xl sm:text-4xl font-extrabold tracking-tight text-slate-900 mb-5">
+                        Questions, setup or support.
+                    </h2>
+                    <p class="text-slate-600 text-lg leading-relaxed mb-8">
+                        Tell us about your shop and we will help you get the terminal running on your
+                        counter.
+                    </p>
+
+                    <div class="space-y-3">
+                        <a href="mailto:contact@jaalle.me"
+                            class="flex items-center gap-4 p-5 rounded-2xl border border-slate-200 bg-slate-50/60 hover:bg-slate-50 hover:border-slate-300 transition group">
+                            <span class="w-11 h-11 rounded-xl bg-white border border-slate-200 text-red-600 flex items-center justify-center shrink-0 shadow-sm">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z">
+                                    </path>
+                                </svg>
+                            </span>
+                            <span class="min-w-0">
+                                <span class="block text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">Email</span>
+                                <span class="block font-bold text-slate-900 group-hover:text-red-600 transition break-all">contact@jaalle.me</span>
+                            </span>
+                        </a>
+
+                        <div class="flex items-center gap-4 p-5 rounded-2xl border border-slate-200 bg-slate-50/60">
+                            <span class="w-11 h-11 rounded-xl bg-white border border-slate-200 text-red-600 flex items-center justify-center shrink-0 shadow-sm">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z">
+                                    </path>
+                                </svg>
+                            </span>
+                            <span class="min-w-0">
+                                <span class="block text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">Runs on</span>
+                                <span class="block font-bold text-slate-900">Any modern browser, on one machine</span>
+                            </span>
+                        </div>
+
+                        <div class="flex items-center gap-4 p-5 rounded-2xl border border-slate-200 bg-slate-50/60">
+                            <span class="w-11 h-11 rounded-xl bg-white border border-slate-200 text-red-600 flex items-center justify-center shrink-0 shadow-sm">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                </svg>
+                            </span>
+                            <span class="min-w-0">
+                                <span class="block text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">Setup</span>
+                                <span class="block font-bold text-slate-900">Start selling in a few minutes</span>
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="rounded-3xl border border-slate-200 bg-slate-50 p-3 shadow-sm">
+                    <div class="rounded-2xl overflow-hidden bg-white border border-slate-100 h-72 sm:h-96 flex flex-col items-center justify-center text-center px-8">
+                        <span class="w-12 h-12 rounded-2xl bg-red-50 text-red-600 flex items-center justify-center mb-4">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z">
+                                </path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                            </svg>
+                        </span>
+                        <h3 class="font-bold text-slate-900 mb-1">Single-device by design</h3>
+                        <p class="text-sm text-slate-500 leading-relaxed max-w-xs">
+                            Pointify runs on the machine at your counter. There is no server to reach,
+                            so there is no map to show.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ── Footer ──────────────────────────────────────────────────────── -->
+    <footer class="bg-slate-900 text-slate-400 mt-auto">
+        <div class="max-w-6xl mx-auto px-5 sm:px-8 py-10">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-6">
+                <div class="flex items-center gap-2.5">
+                    <span class="w-8 h-8 rounded-lg bg-red-600 flex items-center justify-center">
+                        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                        </svg>
+                    </span>
+                    <span class="font-extrabold text-white tracking-tight">Pointify</span>
+                </div>
+
+                <nav class="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm font-medium">
+                    <a href="#about" class="hover:text-white transition">Features</a>
+                    <a href="#contact" class="hover:text-white transition">Contact</a>
+                    <a href="./app.html" class="hover:text-white transition">Open the till</a>
+                    <a href="mailto:contact@jaalle.me" class="hover:text-white transition">contact@jaalle.me</a>
+                </nav>
+            </div>
+
+            <div class="mt-8 pt-6 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+                <p>&copy; 2025 Pointify. All rights reserved.</p>
+                <p>Offline-first point of sale.</p>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Service Worker Registration & Auto-Update -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js').then(registration => {
+                    console.log('SW registered: ', registration);
+
+                    registration.addEventListener('updatefound', () => {
+                        const newWorker = registration.installing;
+                        newWorker.addEventListener('statechange', () => {
+                            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                                // New content available
+                            }
+                        });
+                    });
+
+                    // POLLING: Check for updates every 10 minutes
+                    setInterval(() => {
+                        registration.update();
+                    }, 10 * 60 * 1000);
+
+                }).catch(err => {
+                    console.error('Pointify: service worker registration failed - offline mode is NOT available.', err);
+                    if (!window.isSecureContext) {
+                        console.error('Pointify: this origin is not a secure context. Service workers require https:// (or http://localhost), so install and offline support will not work here.');
+                    }
+                });
+
+                // Only reload when we are REPLACING a worker that was already in
+                // control. The very first install also fires controllerchange, and
+                // bouncing the landing page there would be pointless.
+                let refreshing = false;
+                const hadController = !!navigator.serviceWorker.controller;
+                navigator.serviceWorker.addEventListener('controllerchange', () => {
+                    if (!hadController) return;
+                    if (refreshing) return;
+                    refreshing = true;
+                    window.location.reload();
+                });
+            });
+        }
+    </script>
+
+    <!-- PWA Installation Script -->
+    <script>
+        let deferredPrompt;
+        const installBtn = document.getElementById('pwa-install-btn');
+
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            installBtn.classList.remove('hidden');
+        });
+
+        installBtn.addEventListener('click', async () => {
+            if (!deferredPrompt) return;
+            deferredPrompt.prompt();
+            const { outcome } = await deferredPrompt.userChoice;
+            console.log(`User response to the install prompt: ${outcome}`);
+            deferredPrompt = null;
+            installBtn.classList.add('hidden');
+        });
+    </script>
+</body>
+
+</html>
